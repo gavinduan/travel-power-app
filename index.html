@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>旅行电量表</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@300;400;600;900&family=Playfair+Display:ital,wght@0,700;0,900;1,700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<div class="app">
+
+  <!-- ============ 侧栏 ============ -->
+  <aside class="sidebar no-print">
+    <div class="brand">
+      <div class="brand-top">VOL.47 · 精力版</div>
+      <h1>旅行電量報</h1>
+      <div class="brand-sub">TRAVEL POWER GAZETTE</div>
+    </div>
+
+    <nav class="nav">
+      <button class="nav-item" data-view="trips"><span class="n">01</span>行程</button>
+      <button class="nav-item" data-view="ledger"><span class="n">02</span>每日记账</button>
+      <button class="nav-item" data-view="templates"><span class="n">03</span>行程模板</button>
+      <button class="nav-item" data-view="report"><span class="n">04</span>统计报表</button>
+      <button class="nav-item" data-view="catalog"><span class="n">05</span>支出词库</button>
+    </nav>
+
+    <div class="side-foot">
+      <div class="trip-picker">
+        <label>当前行程</label>
+        <select id="tripSelect"></select>
+      </div>
+      <button class="link-btn" id="revealData">数据保存在本浏览器</button>
+      <button class="link-btn" id="exportAll">导出全部数据 (JSON)</button>
+      <div class="save-state" id="saveState">已保存</div>
+    </div>
+  </aside>
+
+  <!-- ============ 主区 ============ -->
+  <main class="main">
+
+    <!-- ---------- 行程 ---------- -->
+    <section class="view" id="view-trips">
+      <div class="sec-head">
+        <h2>行程档案</h2>
+        <span>THE TRIP ARCHIVE</span>
+      </div>
+
+      <div class="hero">
+        <div class="hero-text">
+          <div class="kicker">本期封面 / COVER</div>
+          <h3>出门时是满电，<br>回程时只剩 3%</h3>
+          <p>旅行从来不是一场关于时间的旅行，而是一场关于电量的旅行。真正决定质量的，是你站在那个地方时，还剩下多少电。</p>
+          <p class="hero-sign">本报编辑部 · 在返程的机舱里</p>
+        </div>
+        <figure class="hero-fig">
+          <img src="assets/cover.png" alt="疲惫的旅人与只剩一格电的电池">
+          <figcaption>FIG. 1 — 抵达与剩余电量，通常不成正比</figcaption>
+        </figure>
+      </div>
+
+      <div class="trip-layout">
+        <div class="trip-list" id="tripList"></div>
+
+        <div class="trip-form">
+          <div class="form-title">新建行程 / NEW TRIP</div>
+          <label>行程名称<input id="fTripName" placeholder="例如：十月京都"></label>
+          <label>目的地<input id="fTripDest" placeholder="例如：京都"></label>
+          <div class="form-row">
+            <label>开始<input type="date" id="fTripStart"></label>
+            <label>结束<input type="date" id="fTripEnd"></label>
+          </div>
+          <label>每日初始电量
+            <input type="number" id="fTripBudget" value="100" min="40" max="100">
+          </label>
+          <button class="btn-primary" id="btnAddTrip">建档</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ---------- 每日记账 ---------- -->
+    <section class="view" id="view-ledger">
+      <div class="sec-head">
+        <h2>每日精力记账</h2>
+        <span>DAILY ENERGY LEDGER</span>
+      </div>
+
+      <div class="day-strip" id="dayStrip"></div>
+
+      <div class="ledger-layout">
+        <div class="ledger-left">
+          <div class="sub-head">
+            <h3>今日支出</h3>
+            <span id="ledgerDateLabel"></span>
+          </div>
+          <div class="ledger-cols">
+            <span>条目</span><span>电量</span><span>时间</span><span></span>
+          </div>
+          <div class="entry-list" id="entryList"></div>
+
+          <div class="add-box">
+            <div class="add-row">
+              <select id="pickItem"></select>
+              <input type="time" id="pickTime">
+              <button class="btn-primary" id="btnAddEntry">记一笔</button>
+            </div>
+            <div class="add-hint">也可从下方常用条目直接点选。</div>
+            <div class="chips" id="quickChips"></div>
+          </div>
+        </div>
+
+        <aside class="ledger-right">
+          <div class="meter-panel">
+            <div class="mp-label"><span>今日剩余电量</span><span>REMAINING</span></div>
+            <div class="big-num" id="bigNum">100<small>%</small></div>
+            <div class="cells" id="cells"></div>
+            <div class="verdict" id="verdict"></div>
+            <div class="tally">
+              <span>支出 <b id="sumDebit">0</b></span>
+              <span>回血 <b id="sumCredit">+0</b></span>
+            </div>
+          </div>
+
+          <div class="mini-panel">
+            <div class="mp-label"><span>电量曲线</span><span>TODAY</span></div>
+            <svg class="chart" id="dayChart" viewBox="0 0 420 190"></svg>
+          </div>
+
+          <div class="mini-panel">
+            <div class="mp-label"><span>当日备注</span><span>NOTE</span></div>
+            <textarea id="dayNote" placeholder="今天为什么掉电这么快？"></textarea>
+          </div>
+        </aside>
+      </div>
+    </section>
+
+    <!-- ---------- 模板 ---------- -->
+    <section class="view" id="view-templates">
+      <div class="sec-head">
+        <h2>行程模板</h2>
+        <span>ITINERARY TEMPLATES</span>
+      </div>
+      <p class="view-desc">把某种典型的一天存成模板，套用到行程里的任意一天，自动生成整套记账条目。</p>
+
+      <div class="tpl-hero">
+        <figure class="tpl-fig">
+          <img src="assets/ledger-side.png" alt="走在老城窄巷里的旅人">
+          <figcaption>FIG. 3 — 模板不承诺轻松，只承诺别再临时决定</figcaption>
+        </figure>
+        <p class="tpl-quote">“把重复的那部分先决定掉，<br>剩下的精力才够用来惊喜。”</p>
+      </div>
+
+      <div class="tpl-grid" id="tplGrid"></div>
+
+      <div class="tpl-create">
+        <div class="form-title">用当天记录存为新模板</div>
+        <div class="add-row">
+          <input id="tplName" placeholder="模板名称，例如：海边躺平日">
+          <button class="btn-primary" id="btnSaveTpl">从当前这一天保存</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ---------- 报表 ---------- -->
+    <section class="view" id="view-report">
+      <div class="sec-head">
+        <h2>统计报表</h2>
+        <span>THE STATISTICS DESK</span>
+      </div>
+
+      <div class="report-head">
+        <div>
+          <div class="kicker">本期调查</div>
+          <h3 id="rptTitle">尚未选择行程</h3>
+          <div class="rpt-sub" id="rptSub"></div>
+        </div>
+        <button class="btn-ghost no-print" id="btnExportPDF">导出 PDF 报告</button>
+      </div>
+
+      <figure class="report-banner">
+        <img src="assets/report-banner.png" alt="山路上的旅人">
+        <figcaption>FIG. 2 — 一条没有测过坡度的路</figcaption>
+      </figure>
+
+      <div class="stat-row" id="statRow"></div>
+
+      <div class="report-chart-wrap">
+        <div class="mp-label"><span>逐日剩余电量</span><span>DAILY REMAINING</span></div>
+        <svg class="chart" id="tripChart" viewBox="0 0 900 260"></svg>
+      </div>
+
+      <div class="report-cols">
+        <div class="report-col">
+          <div class="mp-label"><span>最耗电的项目</span><span>TOP DRAINS</span></div>
+          <ol class="rank" id="topDrains"></ol>
+        </div>
+        <div class="report-col">
+          <div class="mp-label"><span>最有效的回血</span><span>TOP RECOVERY</span></div>
+          <ol class="rank" id="topCredits"></ol>
+        </div>
+        <div class="report-col">
+          <div class="mp-label"><span>低电日警告</span><span>RED ALERT</span></div>
+          <ul class="alert-list" id="alertList"></ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- ---------- 词库 ---------- -->
+    <section class="view" id="view-catalog">
+      <div class="sec-head">
+        <h2>支出词库</h2>
+        <span>THE CATALOG</span>
+      </div>
+      <p class="view-desc">记账时可选的条目。负数为支出，正数为回血。数值是体感均值，按自己的体质调整。</p>
+
+      <div class="cat-layout">
+        <div>
+          <div class="sub-head"><h3>支出 / DEBITS</h3></div>
+          <div class="cat-list" id="catDebit"></div>
+        </div>
+        <div>
+          <div class="sub-head"><h3>回血 / CREDITS</h3></div>
+          <div class="cat-list" id="catCredit"></div>
+        </div>
+      </div>
+
+      <div class="cat-add">
+        <div class="form-title">新增条目</div>
+        <div class="add-row">
+          <input id="catName" placeholder="名称">
+          <input id="catSub" placeholder="说明（可空）">
+          <input type="number" id="catCost" placeholder="电量，如 -12 或 +15">
+          <button class="btn-primary" id="btnAddCat">加入词库</button>
+        </div>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="app.js"></script>
+</body>
+</html>
