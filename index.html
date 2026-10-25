@@ -35,6 +35,9 @@
       </div>
       <button class="link-btn" id="revealData">数据保存在本浏览器</button>
       <button class="link-btn" id="exportAll">导出全部数据 (JSON)</button>
+      <button class="link-btn" id="importAll">导入数据 (JSON)</button>
+      <button class="link-btn" id="undoImport" hidden>撤销上次导入</button>
+      <input type="file" id="importFile" accept="application/json,.json" hidden>
       <div class="save-state" id="saveState">已保存</div>
     </div>
   </aside>
@@ -245,6 +248,19 @@
 </div>
 
 <div class="toast" id="toast"></div>
+
+<!-- ============ 导入确认 ============ -->
+<div class="modal" id="importModal" hidden>
+  <div class="modal-box">
+    <div class="modal-head">导入数据</div>
+    <div class="modal-body" id="importSummary"></div>
+    <div class="modal-foot">
+      <button class="btn-ghost" id="btnImportCancel">取消</button>
+      <button class="btn-ghost" id="btnImportMerge">合并到现有数据</button>
+      <button class="btn-primary" id="btnImportReplace">整体替换</button>
+    </div>
+  </div>
+</div>
 
 <div class="pdf-stage" id="pdfStage" aria-hidden="true"></div>
 

@@ -97,6 +97,11 @@ const STORAGE_KEY = 'travel-power-gazette-v1';
 
 const BACKUP_KEY = STORAGE_KEY + '-salvage';
 
+/* 导入前的快照单独放一个 key。
+   不能和 BACKUP_KEY 混用：那个 key 存的是"读盘失败时的原始损坏串"，
+   是出事时唯一的线索，决不能被一次导入覆盖掉。 */
+const PREIMPORT_KEY = STORAGE_KEY + '-preimport';
+
 const webStore = {
   load() {
     let raw = null;
@@ -166,17 +171,30 @@ let saveBlocked = false;
 /* =========================================================
    持久化
    ========================================================= */
-function normalize(data) {
+function normalize(data, opts) {
   if (!data || typeof data !== 'object') return null;
+  /* keepEmpty：导入的「合并」模式用。
+     默认行为会把缺失的词库补成 DEFAULT_CATALOG、模板补成默认模板 ——
+     那对首次进站是对的，但合并时会把用户删掉的词条又灌回来。
+     所以合并时缺什么就是空什么，只收文件里真实存在的内容。 */
+  const keepEmpty = !!(opts && opts.keepEmpty);
   const s = {
-    catalog: Array.isArray(data.catalog) && data.catalog.length ? data.catalog : DEFAULT_CATALOG.slice(),
-    templates: Array.isArray(data.templates) && data.templates.length ? data.templates : null,
+    catalog: Array.isArray(data.catalog)
+      ? data.catalog
+      : (keepEmpty ? [] : DEFAULT_CATALOG.slice()),
+    templates: Array.isArray(data.templates)
+      ? (data.templates.length || keepEmpty ? data.templates : null)
+      : (keepEmpty ? [] : null),
     trips: Array.isArray(data.trips) ? data.trips : [],
     currentTripId: data.currentTripId || null,
     currentDate: data.currentDate || todayISO(),
     view: data.view || 'trips'
   };
   if (!s.templates) s.templates = defaultTemplates(s.catalog);
+  if (keepEmpty && !s.catalog.length) {
+    /* 合并模式下词库可以为空，但不能为空到让后面 defaultTemplates 崩掉 */
+    s.templates = s.templates || [];
+  }
   s.trips.forEach(t => {
     if (!Array.isArray(t.days)) t.days = [];
     if (typeof t.budget !== 'number') t.budget = 100;
@@ -1090,6 +1108,228 @@ async function exportAll() {
   if (res && res.ok) toast('已导出 JSON');
 }
 
+/* =========================================================
+   导入
+   ========================================================= */
+/* 导入前把当前 state 存进备份 key（用来撤销这一次导入）。
+   注意：不能和读盘失败的救援备份共用一个 key ——
+   用户读盘失败后靠导入自救时，救援备份里存的是那份原始损坏数据，
+   是最不能丢的东西；被导入前快照覆盖掉就等于把唯一的线索抹了。 */
+function backupBeforeImport() {
+  try {
+    localStorage.setItem(PREIMPORT_KEY, JSON.stringify(state));
+    return true;
+  } catch (e) {
+    console.error('导入前备份失败', e);
+    return false;
+  }
+}
+
+function hasPreimportBackup() {
+  try { return !!localStorage.getItem(PREIMPORT_KEY); } catch (e) { return false; }
+}
+
+/* 撤销上一次导入：把导入前的快照原样装回去 */
+async function undoImport() {
+  let raw = null;
+  try { raw = localStorage.getItem(PREIMPORT_KEY); } catch (e) { raw = null; }
+  if (!raw) return toast('没有可撤销的导入');
+
+  let data;
+  try { data = JSON.parse(raw); } catch (e) { return toast('导入前备份已损坏，无法撤销'); }
+
+  if (!window.confirm('撤销上一次导入，把数据恢复到导入前的样子？\n\n当前数据会被替换掉。')) return;
+
+  const n = normalize(data, { keepEmpty: true });
+  if (!n) return toast('备份内容无法识别');
+
+  state = n;
+  saveBlocked = false;
+  const bar = document.getElementById('dataAlert');
+  if (bar) { bar.hidden = true; bar.classList.remove('show'); }
+
+  try { localStorage.removeItem(PREIMPORT_KEY); } catch (e) { /* 忽略 */ }
+  await flushSave();
+  renderTripSelect();
+  renderUndoImport();
+  switchView(state.view || 'trips');
+  toast('已撤销，回到导入前的数据');
+}
+
+/* 「撤销上次导入」按钮只在真有快照时才出现，平时不占位置 */
+function renderUndoImport() {
+  const btn = document.getElementById('undoImport');
+  if (!btn) return;
+  btn.hidden = !hasPreimportBackup();
+}
+
+/* 合并导入的 id 重映射。
+   词库 / 模板 / 行程 / 记账条目的 id 全是 uid() 生成的随机串，
+   直接 concat 会造出"看着一样的重复条目"，而且模板项和条目里的 catId
+   会指向只在另一个浏览器里存在的词条 id —— 那些项会显示成「条目」并算错电量。 */
+function mergeState(cur, inc) {
+  const next = {
+    catalog: cur.catalog.slice(),
+    templates: cur.templates.slice(),
+    trips: cur.trips.slice(),
+    currentTripId: cur.currentTripId,
+    currentDate: cur.currentDate,
+    view: cur.view
+  };
+
+  /* 1. 词库：先按名字对齐（同名即同一条目，电量以现有为准），再按 id 对齐；
+        都不撞才当新条目收下。同时记下 旧id → 新id 供后面重映射。 */
+  const catMap = new Map();
+  const catByName = new Map(next.catalog.map(c => [c.name, c]));
+  const catById = new Map(next.catalog.map(c => [c.id, c]));
+
+  (inc.catalog || []).forEach(c => {
+    if (!c || typeof c.name !== 'string') return;
+    const byName = catByName.get(c.name);
+    if (byName) { catMap.set(c.id, byName.id); return; }
+    const byId = catById.get(c.id);
+    if (byId) {
+      /* id 撞了但名字不同：换新 id，否则两条不同条目共用一个 id 会互相顶掉 */
+      const fresh = Object.assign({}, c, { id: uid() });
+      next.catalog.push(fresh);
+      catByName.set(fresh.name, fresh);
+      catById.set(fresh.id, fresh);
+      catMap.set(c.id, fresh.id);
+      return;
+    }
+    const copy = Object.assign({}, c);
+    next.catalog.push(copy);
+    catByName.set(copy.name, copy);
+    catById.set(copy.id, copy);
+    catMap.set(c.id, copy.id);
+  });
+
+  const remapItems = items => (Array.isArray(items) ? items : []).map(it =>
+    Object.assign({}, it, { catId: catMap.get(it.catId) || it.catId })
+  );
+
+  /* 2. 模板：同名算同一个，跳过（否则会出现两个「标准观光日」） */
+  const tplNames = new Set(next.templates.map(t => t.name));
+  (inc.templates || []).forEach(t => {
+    if (!t || typeof t.name !== 'string' || tplNames.has(t.name)) return;
+    next.templates.push(Object.assign({}, t, { id: uid(), items: remapItems(t.items) }));
+    tplNames.add(t.name);
+  });
+
+  /* 3. 行程：同名同起止算同一个，跳过；其余一律发新 id，避免 id 撞车 */
+  const tripKey = t => t.name + '|' + t.start + '|' + t.end;
+  const tripKeys = new Set(next.trips.map(tripKey));
+  (inc.trips || []).forEach(t => {
+    if (!t || typeof t.name !== 'string' || tripKeys.has(tripKey(t))) return;
+    const copy = Object.assign({}, t, {
+      id: uid(),
+      days: (Array.isArray(t.days) ? t.days : []).map(d => Object.assign({}, d, {
+        entries: (Array.isArray(d.entries) ? d.entries : []).map(en =>
+          Object.assign({}, en, { id: uid(), catId: catMap.get(en.catId) || en.catId })
+        )
+      }))
+    });
+    next.trips.push(copy);
+    tripKeys.add(tripKey(copy));
+  });
+
+  next.currentTripId = next.trips.some(t => t.id === cur.currentTripId)
+    ? cur.currentTripId
+    : (next.trips.length ? next.trips[0].id : null);
+  return next;
+}
+
+/* 待确认的导入内容；用户点了「合并」或「替换」才真正写入 */
+let pendingImport = null;
+
+function pickImportFile() {
+  const input = document.getElementById('importFile');
+  if (!input) return;
+  input.value = '';   // 清空，否则连续导入同一个文件不触发 change
+  input.click();
+}
+
+async function onImportFilePicked(ev) {
+  const file = ev.target.files && ev.target.files[0];
+  if (!file) return;
+
+  let data;
+  try {
+    const text = typeof file.text === 'function'
+      ? await file.text()
+      : await new Promise((ok, no) => {
+          const r = new FileReader();
+          r.onload = () => ok(String(r.result));
+          r.onerror = () => no(r.error);
+          r.readAsText(file);
+        });
+    data = JSON.parse(text);
+  } catch (e) {
+    return toast('这个文件不是有效的 JSON');
+  }
+
+  if (!data || typeof data !== 'object' || Array.isArray(data)) {
+    return toast('文件内容不是旅行电量表数据');
+  }
+  /* 至少得有一张认识的表，否则导入等于凭空造数据 */
+  if (!Array.isArray(data.trips) && !Array.isArray(data.catalog) && !Array.isArray(data.templates)) {
+    return toast('文件里没有行程 / 词库 / 模板，无法导入');
+  }
+
+  pendingImport = data;
+  showImportDialog(data);
+}
+
+function showImportDialog(data) {
+  const box = document.getElementById('importModal');
+  const sum = document.getElementById('importSummary');
+  if (!box || !sum) return;
+
+  const trips = Array.isArray(data.trips) ? data.trips : [];
+  const days = trips.reduce((a, t) => a + (Array.isArray(t.days) ? t.days.length : 0), 0);
+  const entries = trips.reduce((a, t) => a + (Array.isArray(t.days) ? t.days : [])
+    .reduce((b, d) => b + (Array.isArray(d.entries) ? d.entries.length : 0), 0), 0);
+  const cats = Array.isArray(data.catalog) ? data.catalog.length : 0;
+  const tpls = Array.isArray(data.templates) ? data.templates.length : 0;
+
+  sum.innerHTML = `
+    <p>文件里有 <b>${trips.length}</b> 个行程 · <b>${days}</b> 天 · <b>${entries}</b> 条记录，
+      词库 <b>${cats}</b> 条，模板 <b>${tpls}</b> 个。</p>
+    <p class="modal-note">导入前会先把当前数据存一份到本机备份，导错了还能导回来。</p>
+    <p class="modal-note">「合并」只补上文件里有、当前没有的内容；同名行程、同名词条、同名模板会跳过。</p>`;
+  box.hidden = false;
+  box.classList.add('show');
+}
+
+function closeImportDialog() {
+  const box = document.getElementById('importModal');
+  if (box) { box.hidden = true; box.classList.remove('show'); }
+  pendingImport = null;
+}
+
+async function applyImport(mode) {
+  const data = pendingImport;
+  if (!data) return;
+  if (!backupBeforeImport()) return toast('备份当前数据失败，已取消导入');
+
+  const inc = normalize(data, { keepEmpty: mode !== 'replace' });
+  if (!inc) return toast('文件内容无法识别，已取消导入');
+
+  state = (mode === 'replace') ? inc : mergeState(state, inc);
+
+  /* 之前若因读盘失败进了只读状态，这次是用户主动覆盖，解除封锁并收起告警条 */
+  saveBlocked = false;
+  const bar = document.getElementById('dataAlert');
+  if (bar) { bar.hidden = true; bar.classList.remove('show'); }
+
+  closeImportDialog();
+  await flushSave();
+  renderTripSelect();
+  renderUndoImport();
+  switchView(state.view || 'trips');
+  toast(mode === 'replace' ? '已整体替换并导入' : '已合并导入');
+}
+
 async function exportPDF() {
   const trip = currentTrip();
   if (!trip) return toast('请先选择一个行程');
@@ -1300,8 +1540,24 @@ async function init() {
   document.getElementById('btnExportPDF').addEventListener('click', exportPDF);
   document.getElementById('revealData').addEventListener('click', revealDataFile);
 
+  // 导入
+  document.getElementById('importAll').addEventListener('click', pickImportFile);
+  document.getElementById('undoImport').addEventListener('click', undoImport);
+  document.getElementById('importFile').addEventListener('change', onImportFilePicked);
+  document.getElementById('btnImportMerge').addEventListener('click', () => applyImport('merge'));
+  document.getElementById('btnImportReplace').addEventListener('click', () => applyImport('replace'));
+  document.getElementById('btnImportCancel').addEventListener('click', closeImportDialog);
+  document.getElementById('importModal').addEventListener('click', ev => {
+    // 点遮罩才算关闭；点面板内部不关
+    if (ev.target && ev.target.id === 'importModal') closeImportDialog();
+  });
+
   // 快捷键：⌘/Ctrl + N 新建
   document.addEventListener('keydown', ev => {
+    if (ev.key === 'Escape') {
+      const box = document.getElementById('importModal');
+      if (box && !box.hidden) { closeImportDialog(); return; }
+    }
     if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 'n') {
       ev.preventDefault();
       switchView('trips');
@@ -1317,6 +1573,7 @@ async function init() {
 
   switchView(state.view || 'trips');
   markDirty();
+  renderUndoImport();
 }
 
 /* 同步版本的落盘：只给 pagehide/visibilitychange 用。
