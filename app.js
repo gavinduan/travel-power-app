@@ -122,7 +122,6 @@ const webStore = {
     return 'localStorage: ' + STORAGE_KEY;
   }
 };
-
 const store = window.api || webStore;
 
 let saveTimer = null;
@@ -334,7 +333,7 @@ function renderTrips() {
   if (!state.trips.length) {
     list.innerHTML = `
       <div class="empty-fig">
-        <img src="assets/empty-state.png" alt="打开的行李箱与空椅子">
+        <img src="assets/empty-state.jpg" alt="打开的行李箱与空椅子">
         <div class="empty-fig-text">
           <b>还没有行程</b>
           <span>空箱子已经打开了，右侧建档，就可以开始计算这一次能撑多久。</span>
@@ -357,8 +356,16 @@ function renderTrips() {
           <div class="tc-meta">${esc(t.dest || '—')} · ${fmtDate(t.start)} — ${fmtDate(t.end)} · ${days.length} 天</div>
         </div>
         <div class="tc-stat">平均余量<br><b class="${low}">${avg}%</b></div>
+        <button class="trip-del" data-del="${t.id}" title="删除行程">×</button>
       </div>`;
   }).join('');
+
+  list.querySelectorAll('.trip-del').forEach(btn => {
+    btn.addEventListener('click', ev => {
+      ev.stopPropagation();
+      deleteTrip(btn.dataset.del);
+    });
+  });
 
   list.querySelectorAll('.trip-card').forEach(card => {
     card.addEventListener('click', () => {
@@ -372,6 +379,33 @@ function renderTrips() {
       switchView('ledger');
     });
   });
+}
+
+function deleteTrip(id) {
+  const trip = state.trips.find(t => t.id === id);
+  if (!trip) return;
+
+  const count = trip.days.reduce((s, d) => s + d.entries.length, 0);
+  const ok = window.confirm(
+    `删除行程「${trip.name}」？\n\n这个行程下的 ${trip.days.length} 天、${count} 条记账会一并删除，无法恢复。`
+  );
+  if (!ok) return;
+
+  state.trips = state.trips.filter(t => t.id !== id);
+
+  if (state.currentTripId === id) {
+    state.currentTripId = state.trips.length ? state.trips[0].id : null;
+    const next = currentTrip();
+    if (next) {
+      const days = tripDays(next);
+      state.currentDate = days.length ? days[0].date : next.start;
+    }
+  }
+
+  markDirty();
+  renderTripSelect();
+  renderTrips();
+  toast('行程已删除');
 }
 
 function addTrip() {
@@ -946,15 +980,148 @@ async function exportAll() {
 async function exportPDF() {
   const trip = currentTrip();
   if (!trip) return toast('请先选择一个行程');
+  if (typeof html2pdf === 'undefined') return toast('PDF 组件未加载，请检查网络后重试');
 
-  switchView('report');
-  await new Promise(r => setTimeout(r, 380));
+  const btn = document.getElementById('btnExportPDF');
+  const oldText = btn.textContent;
+  btn.textContent = '正在生成…';
+  btn.disabled = true;
 
-  toast('在打印对话框中选择「另存为 PDF」');
-  await new Promise(r => setTimeout(r, 700));
+  const stage = document.getElementById('pdfStage');
+  stage.innerHTML = buildPdfDoc(trip);
 
-  const res = await store.exportPDF(`${trip.name}-电量报告.pdf`);
-  if (res && res.ok) toast('打印对话框已打开');
+  try {
+    await html2pdf()
+      .set({
+        margin: [10, 10, 12, 10],
+        filename: `${trip.name}-电量报告.pdf`,
+        image: { type: 'jpeg', quality: 0.95 },
+        html2canvas: { scale: 2, backgroundColor: '#f3eee1', useCORS: true, scrollY: 0 },
+        jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
+        pagebreak: { mode: ['css', 'legacy'] }
+      })
+      .from(stage.firstElementChild)
+      .save();
+    toast('PDF 已生成');
+  } catch (e) {
+    console.error(e);
+    toast('生成失败，请重试');
+  } finally {
+    stage.innerHTML = '';
+    btn.textContent = oldText;
+    btn.disabled = false;
+  }
+}
+
+/* 生成一份独立的报表文档（不截屏当前界面） */
+function buildPdfDoc(trip) {
+  const days = tripDays(trip);
+  const withData = days.filter(d => d.entries.length);
+
+  const totalDebit = withData.reduce((s, d) => s + sumBy(d, -1), 0);
+  const totalCredit = withData.reduce((s, d) => s + sumBy(d, 1), 0);
+  const avgRemain = withData.length
+    ? Math.round(withData.reduce((s, d) => s + remainingOf(trip, d), 0) / withData.length)
+    : trip.budget;
+  const lowDays = withData.filter(d => remainingOf(trip, d) < 20).length;
+  const totalEntries = withData.reduce((s, d) => s + d.entries.length, 0);
+
+  // 汇总条目
+  const agg = {};
+  withData.forEach(d => d.entries.forEach(e => {
+    if (!agg[e.name]) agg[e.name] = { name: e.name, total: 0, count: 0 };
+    agg[e.name].total += e.cost;
+    agg[e.name].count++;
+  }));
+  const all = Object.values(agg);
+  const drains = all.filter(x => x.total < 0).sort((a, b) => a.total - b.total).slice(0, 6);
+  const credits = all.filter(x => x.total > 0).sort((a, b) => b.total - a.total).slice(0, 6);
+
+  const dayRows = days.map(d => {
+    const r = d.entries.length ? remainingOf(trip, d) + '%' : '—';
+    const debit = d.entries.length ? sumBy(d, -1) : 0;
+    const credit = d.entries.length ? sumBy(d, 1) : 0;
+    const main = d.entries.slice().sort((a, b) => a.cost - b.cost)[0];
+    return `
+      <tr>
+        <td>${fmtDate(d.date)}<small>${weekday(d.date)}</small></td>
+        <td class="num">${d.entries.length}</td>
+        <td class="num">${debit || '—'}</td>
+        <td class="num plus">${credit ? '+' + credit : '—'}</td>
+        <td class="num ${parseInt(r, 10) < 20 ? 'low' : ''}"><b>${r}</b></td>
+        <td>${main ? esc(main.name) : '—'}</td>
+      </tr>`;
+  }).join('');
+
+  const rankRows = (list, isPlus) => list.length
+    ? list.map((x, i) => `
+      <tr>
+        <td class="no">${String(i + 1).padStart(2, '0')}</td>
+        <td>${esc(x.name)}</td>
+        <td class="num">${x.count} 次</td>
+        <td class="num ${isPlus ? 'plus' : ''}"><b>${isPlus ? '+' : ''}${x.total}</b></td>
+      </tr>`).join('')
+    : '<tr><td colspan="4" class="muted">暂无数据</td></tr>';
+
+  return `
+  <div class="pdf-doc">
+    <header class="pdf-head">
+      <div class="pdf-mast">
+        <div class="pdf-mast-top"><span>精力特刊 · 行程报告</span><span>${fmtDate(trip.start)} — ${fmtDate(trip.end)}</span></div>
+        <h1>旅行電量報</h1>
+        <div class="pdf-mast-sub">THE TRAVEL POWER GAZETTE — ${esc(trip.name)}</div>
+      </div>
+      <div class="pdf-meta">
+        <span>目的地：${esc(trip.dest || '—')}</span>
+        <span>共 ${days.length} 天 / ${withData.length} 天有记录</span>
+        <span>生成于 ${new Date().toLocaleString('zh-CN')}</span>
+      </div>
+    </header>
+
+    <section class="pdf-stats">
+      <div><label>平均剩余电量</label><b class="${avgRemain < 20 ? 'low' : ''}">${avgRemain}<small>%</small></b></div>
+      <div><label>总支出</label><b>${Math.abs(totalDebit)}<small>点</small></b></div>
+      <div><label>总回血</label><b class="plus">${totalCredit}<small>点</small></b></div>
+      <div><label>低电日</label><b class="${lowDays ? 'low' : ''}">${lowDays}<small>天</small></b></div>
+    </section>
+
+    <section class="pdf-block">
+      <h2>逐日电量</h2>
+      <table class="pdf-table">
+        <thead>
+          <tr><th>日期</th><th class="num">条目</th><th class="num">支出</th><th class="num">回血</th><th class="num">剩余</th><th>最耗电</th></tr>
+        </thead>
+        <tbody>${dayRows}</tbody>
+      </table>
+    </section>
+
+    <section class="pdf-cols">
+      <div class="pdf-block">
+        <h2>最耗电的项目</h2>
+        <table class="pdf-table">
+          <thead><tr><th class="no">#</th><th>条目</th><th class="num">次数</th><th class="num">合计</th></tr></thead>
+          <tbody>${rankRows(drains, false)}</tbody>
+        </table>
+      </div>
+      <div class="pdf-block">
+        <h2>最有效的回血</h2>
+        <table class="pdf-table">
+          <thead><tr><th class="no">#</th><th>条目</th><th class="num">次数</th><th class="num">合计</th></tr></thead>
+          <tbody>${rankRows(credits, true)}</tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="pdf-block">
+      <h2>备注</h2>
+      ${withData.filter(d => d.note).map(d => `<p class="pdf-note"><b>${fmtDate(d.date)}</b> ${esc(d.note)}</p>`).join('') || '<p class="muted">没有留下备注。</p>'}
+    </section>
+
+    <footer class="pdf-foot">
+      <span>旅行電量報 · ${esc(trip.name)}</span>
+      <span>共 ${totalEntries} 条记账 · 数据来自你的体感</span>
+    </footer>
+  </div>`;
 }
 
 async function revealDataFile() {
