@@ -196,7 +196,9 @@ function seedDemo() {
   const tpl = state.templates[0];
 
   for (let i = 0; i < 3; i++) {
-    const d = new Date(start);
+    /* 必须带 T00:00:00：纯日期串（如 "2026-10-25"）会被按 UTC 解析，
+       在西半球时区会退到前一天。加上时间部分才是本地时间。 */
+    const d = new Date(start + 'T00:00:00');
     d.setDate(d.getDate() + i);
     const iso = localISO(d);
     let entries = tpl.items.map((it, idx) => {
