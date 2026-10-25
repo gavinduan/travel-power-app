@@ -118,7 +118,7 @@ const webStore = {
       return JSON.parse(raw);
     } catch (e) {
       /* 解析失败绝不能静默返回 null —— 那样上层会以为"首次访问"，
-         随后 seedDemo() 会用示例数据把用户真实数据原地覆盖。
+         进而按空数据继续，用户真实数据就此无声丢掉。
          这里把原始串转存到备份 key，让用户还有救回来的机会。 */
       console.error('数据解析失败，原串已备份到 ' + BACKUP_KEY, e);
       try { localStorage.setItem(BACKUP_KEY, raw); } catch (_) { /* 备份失败也不阻断 */ }
@@ -212,8 +212,7 @@ async function loadState() {
     const n = normalize(data);
     if (n) state = n;
   } catch (e) {
-    /* 读取失败时绝不能再 seedDemo()：那会把用户的真实数据覆盖成示例数据。
-       保持空 state，只读不写，并给出可恢复的提示。 */
+    /* 读取失败时绝不写任何东西：保持空 state，只读不写，并给出可恢复的提示。 */
     loadFailed = true;
     saveBlocked = true;
     console.error('读取数据失败', e);
@@ -223,7 +222,8 @@ async function loadState() {
   if (!Array.isArray(state.templates) || !state.templates.length) {
     state.templates = defaultTemplates(state.catalog);
   }
-  if (!loadFailed && !state.trips.length) seedDemo();
+  /* 首次进入不再塞示例行程：空白开局，由用户自己建档。
+     读取失败时更不能写任何东西（见上面的 catch）。 */
 }
 
 /* 读取失败时在顶部挂一条不会自动消失的告警，附"导出原始数据"救援入口 */
@@ -265,7 +265,6 @@ function showLoadFailure(err) {
     bar.hidden = true;
     state = { catalog: DEFAULT_CATALOG.slice(), templates: [], trips: [], currentTripId: null, currentDate: todayISO(), view: 'trips' };
     state.templates = defaultTemplates(state.catalog);
-    seedDemo();
     renderTripSelect();
     renderView(state.view);
     markDirty();
@@ -309,63 +308,6 @@ async function flushSave() {
   }
 }
 let lastSaveFailed = false;
-
-/* ---------- 演示数据 ---------- */
-function seedDemo() {
-  const tripId = uid();
-  const start = todayISO();
-  const days = [];
-  const tpl = state.templates[0];
-
-  for (let i = 0; i < 3; i++) {
-    /* 必须带 T00:00:00：纯日期串（如 "2026-10-25"）会被按 UTC 解析，
-       在西半球时区会退到前一天。加上时间部分才是本地时间。 */
-    const d = new Date(start + 'T00:00:00');
-    d.setDate(d.getDate() + i);
-    const iso = localISO(d);
-    let entries = tpl.items.map((it, idx) => {
-      const cat = state.catalog.find(c => c.id === it.catId);
-      return {
-        id: uid(),
-        catId: it.catId,
-        name: cat ? cat.name : '条目',
-        sub: cat ? cat.sub : '',
-        cost: it.cost,
-        time: String(9 + idx * 2).padStart(2, '0') + ':00'
-      };
-    });
-
-    // 第二天更累：加一次徒步；第三天赶早班机回程
-    if (i === 1) {
-      const c = state.catalog.find(x => x.name === '登山 / 徒步半天');
-      if (c) entries.push({ id: uid(), catId: c.id, name: c.name, sub: c.sub, cost: c.cost, time: '14:00' });
-    }
-    if (i === 2) {
-      const c = state.catalog.find(x => x.name === '赶早班机 · 值机安检');
-      if (c) entries.push({ id: uid(), catId: c.id, name: c.name, sub: c.sub, cost: c.cost, time: '06:00' });
-      entries = entries.filter(e => e.name !== '看日落 · 发呆');
-    }
-
-    days.push({
-      date: iso,
-      entries,
-      note: i === 0 ? '第一天，腿还在，兴致也在。' : (i === 1 ? '下午那趟山，把最后一格电也带走了。' : '')
-    });
-  }
-
-  state.trips.push({
-    id: tripId,
-    name: '十月京都（示例）',
-    dest: '京都',
-    start,
-    end: days[days.length - 1].date,
-    budget: 100,
-    days
-  });
-  state.currentTripId = tripId;
-  state.currentDate = start;
-  markDirty();
-}
 
 /* =========================================================
    工具函数
