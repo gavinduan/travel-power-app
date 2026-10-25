@@ -327,18 +327,21 @@ input:focus,select:focus,textarea:focus{border-color:var(--ink);box-shadow:0 0 0
 .trip-card.active{background:rgba(25,21,18,.055);}
 
 .trip-del{
-  border:none;
+  border:1px solid transparent;
   background:none;
   cursor:pointer;
   color:var(--ink-3);
-  font-size:16px;
+  font-size:15px;
   line-height:1;
-  padding:4px;
-  opacity:.35;
+  width:24px;
+  height:24px;
+  border-radius:50%;
+  padding:0;
+  opacity:.7;
   transition:all .15s ease;
 }
-.trip-card:hover .trip-del{opacity:1;}
-.trip-del:hover{color:var(--red);transform:scale(1.15);}
+.trip-card:hover .trip-del{opacity:1;border-color:rgba(163,39,26,.35);}
+.trip-del:hover{color:var(--red);background:rgba(163,39,26,.08);transform:scale(1.08);}
 .trip-card .tc-name{
   font-size:18px;
   font-weight:900;
