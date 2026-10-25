@@ -152,6 +152,44 @@ body::after{
 }
 .save-state.dirty{color:var(--red);}
 
+/* ================= 数据异常告警条 ================= */
+.data-alert{
+  display:none;
+  align-items:center;
+  flex-wrap:wrap;
+  gap:10px 14px;
+  margin-bottom:22px;
+  padding:12px 16px;
+  background:#fbeee7;
+  border:1px solid var(--red);
+  border-left:5px solid var(--red);
+  font-size:12.5px;
+  line-height:1.7;
+  color:var(--ink);
+}
+.data-alert.show{display:flex;}
+.data-alert[hidden]{display:none;}
+.data-alert b{
+  font-size:13px;
+  letter-spacing:.06em;
+  color:var(--red);
+  white-space:nowrap;
+}
+.data-alert span{flex:1;min-width:220px;color:var(--ink-2);}
+.data-alert button{
+  padding:6px 12px;
+  border:1px solid var(--ink);
+  background:var(--paper-3);
+  font-family:var(--serif);
+  font-size:12px;
+  color:var(--ink);
+  cursor:pointer;
+  white-space:nowrap;
+}
+.data-alert button:hover{background:var(--ink);color:var(--paper);}
+.data-alert button#btnStartFresh{border-color:var(--rule);color:var(--ink-2);}
+.data-alert button#btnStartFresh:hover{background:var(--ink-3);color:var(--paper);}
+
 /* ================= 主区 ================= */
 .main{
   flex:1;

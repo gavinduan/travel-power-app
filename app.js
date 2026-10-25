@@ -95,18 +95,43 @@ let state = {
    ========================================================= */
 const STORAGE_KEY = 'travel-power-gazette-v1';
 
+const BACKUP_KEY = STORAGE_KEY + '-salvage';
+
 const webStore = {
   load() {
+    let raw = null;
     try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      return raw ? JSON.parse(raw) : null;
+      raw = localStorage.getItem(STORAGE_KEY);
     } catch (e) {
+      // 隐私模式下 getItem 也可能抛错：当作"没有数据"，但不要覆盖任何东西
+      console.error('读取 localStorage 失败', e);
       return null;
+    }
+    if (!raw) return null;
+
+    try {
+      return JSON.parse(raw);
+    } catch (e) {
+      /* 解析失败绝不能静默返回 null —— 那样上层会以为"首次访问"，
+         随后 seedDemo() 会用示例数据把用户真实数据原地覆盖。
+         这里把原始串转存到备份 key，让用户还有救回来的机会。 */
+      console.error('数据解析失败，原串已备份到 ' + BACKUP_KEY, e);
+      try { localStorage.setItem(BACKUP_KEY, raw); } catch (_) { /* 备份失败也不阻断 */ }
+      const err = new Error('数据解析失败');
+      err.code = 'PARSE_FAILED';
+      throw err;
     }
   },
   save(data) {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
     return true;
+  },
+  /** 有备份数据可恢复时返回原始串，否则返回 null */
+  salvage() {
+    try { return localStorage.getItem(BACKUP_KEY); } catch (e) { return null; }
+  },
+  clearSalvage() {
+    try { localStorage.removeItem(BACKUP_KEY); } catch (e) { /* 忽略 */ }
   },
   exportJSON(payload) {
     const blob = new Blob([payload.content], { type: 'application/json' });
@@ -114,8 +139,11 @@ const webStore = {
     const a = document.createElement('a');
     a.href = url;
     a.download = payload.defaultName || 'travel-power-export.json';
+    document.body.appendChild(a);
     a.click();
-    URL.revokeObjectURL(url);
+    document.body.removeChild(a);
+    /* 必须延迟 revoke：紧跟在 click 后立刻回收，部分浏览器会把下载取消掉 */
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
     return { ok: true };
   },
   exportPDF() {
@@ -132,6 +160,8 @@ const webStore = {
 const store = window.api || webStore;
 
 let saveTimer = null;
+/* 读取阶段失败时置 true：此后禁止任何自动写回，避免把用户数据覆盖成示例数据 */
+let saveBlocked = false;
 
 /* =========================================================
    持久化
@@ -158,35 +188,109 @@ function normalize(data) {
 }
 
 async function loadState() {
+  let loadFailed = false;
   try {
     const data = await store.load();
     const n = normalize(data);
     if (n) state = n;
   } catch (e) {
+    /* 读取失败时绝不能再 seedDemo()：那会把用户的真实数据覆盖成示例数据。
+       保持空 state，只读不写，并给出可恢复的提示。 */
+    loadFailed = true;
+    saveBlocked = true;
     console.error('读取数据失败', e);
+    state.trips = [];
+    showLoadFailure(e);
   }
   if (!Array.isArray(state.templates) || !state.templates.length) {
     state.templates = defaultTemplates(state.catalog);
   }
-  if (!state.trips.length) seedDemo();
+  if (!loadFailed && !state.trips.length) seedDemo();
+}
+
+/* 读取失败时在顶部挂一条不会自动消失的告警，附"导出原始数据"救援入口 */
+function showLoadFailure(err) {
+  const bar = document.getElementById('dataAlert');
+  if (!bar) return;
+  const canSalvage = typeof store.salvage === 'function' && !!store.salvage();
+  bar.innerHTML = `
+    <b>读取本地数据失败</b>
+    <span>${canSalvage
+      ? '原始数据已完整备份，没有被覆盖。建议先导出备份，再决定是否重新开始。'
+      : '数据可能已损坏。为避免覆盖，本次不会自动保存，请先导出排查。'}</span>
+    ${canSalvage ? '<button id="btnSalvage">导出备份数据</button>' : ''}
+    <button id="btnStartFresh">放弃并重新开始</button>`;
+  bar.hidden = false;
+  bar.classList.add('show');
+
+  const sb = document.getElementById('btnSalvage');
+  if (sb) sb.addEventListener('click', () => {
+    const raw = store.salvage();
+    if (!raw) return toast('备份已不存在');
+    const b = new Blob([raw], { type: 'application/json' });
+    const u = URL.createObjectURL(b);
+    const a = document.createElement('a');
+    a.href = u;
+    a.download = '旅行电量表-原始备份.json';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(u), 1000);
+    toast('备份已导出');
+  });
+
+  document.getElementById('btnStartFresh').addEventListener('click', () => {
+    if (!window.confirm('确定放弃原有数据、从空白开始？\n\n原来的数据仍留在备份里，但界面会重新初始化。')) return;
+    if (typeof store.clearSalvage === 'function') store.clearSalvage();
+    loadFailed = false;
+    saveBlocked = false;
+    bar.hidden = true;
+    state = { catalog: DEFAULT_CATALOG.slice(), templates: [], trips: [], currentTripId: null, currentDate: todayISO(), view: 'trips' };
+    state.templates = defaultTemplates(state.catalog);
+    seedDemo();
+    renderTripSelect();
+    renderView(state.view);
+    markDirty();
+  });
 }
 
 function markDirty() {
   const el = document.getElementById('saveState');
+  if (saveBlocked) {
+    el.textContent = '未保存（数据读取异常）';
+    el.classList.add('dirty');
+    return;
+  }
   el.textContent = '保存中…';
   el.classList.add('dirty');
   clearTimeout(saveTimer);
-  saveTimer = setTimeout(async () => {
-    try {
-      await store.save(state);
-      el.textContent = '已保存 ' + new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
-      el.classList.remove('dirty');
-    } catch (e) {
-      el.textContent = '保存失败';
-      el.classList.add('dirty');
-    }
-  }, 320);
+  saveTimer = setTimeout(flushSave, 320);
 }
+
+/* 立即写盘。抽出来是为了让「页面即将关闭」也能复用同一套逻辑。 */
+async function flushSave() {
+  clearTimeout(saveTimer);
+  saveTimer = null;
+  if (saveBlocked) return;
+  const el = document.getElementById('saveState');
+  try {
+    await store.save(state);
+    el.textContent = '已保存 ' + new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+    el.classList.remove('dirty');
+    lastSaveFailed = false;
+  } catch (e) {
+    /* 只在"从成功变为失败"时弹一次 toast：每次输入都弹会盖住界面。
+       小角落里的一行字用户根本看不见，存不上必须让人知道。 */
+    if (!lastSaveFailed) {
+      toast('保存失败：浏览器存储可能已满，请先导出数据');
+      lastSaveFailed = true;
+    }
+    el.textContent = '保存失败';
+    el.classList.add('dirty');
+    console.error('保存失败', e);
+  }
+}
+let lastSaveFailed = false;
 
 /* ---------- 演示数据 ---------- */
 function seedDemo() {
@@ -1204,8 +1308,28 @@ async function init() {
     }
   });
 
+  /* debounce 期间关标签页 / 切到后台：立刻补一次写盘，否则最后一次改动直接丢。
+     pagehide 比 beforeunload 更可靠（移动端 Safari、b/back 缓存下都会触发）。 */
+  window.addEventListener('pagehide', () => { if (saveTimer) flushSync(); });
+  window.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden' && saveTimer) flushSync();
+  });
+
   switchView(state.view || 'trips');
   markDirty();
+}
+
+/* 同步版本的落盘：只给 pagehide/visibilitychange 用。
+   这些事件里没法等 Promise，只能同步写 localStorage。 */
+function flushSync() {
+  clearTimeout(saveTimer);
+  saveTimer = null;
+  if (saveBlocked) return;
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  } catch (e) {
+    console.error('关闭前保存失败', e);
+  }
 }
 
 init();
