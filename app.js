@@ -3,7 +3,14 @@
    ========================================================= */
 
 const uid = () => Math.random().toString(36).slice(2, 10);
-const todayISO = () => new Date().toISOString().slice(0, 10);
+
+/* 把 Date 按“浏览器本地时区”格式化为 YYYY-MM-DD。
+   不能用 toISOString()——它取的是 UTC 日期，在 UTC+8 会比本地日期少一天。 */
+function localISO(d) {
+  const p = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+const todayISO = () => localISO(new Date());
 
 /* ---------- 默认词库 ---------- */
 const DEFAULT_CATALOG = [
@@ -191,7 +198,7 @@ function seedDemo() {
   for (let i = 0; i < 3; i++) {
     const d = new Date(start);
     d.setDate(d.getDate() + i);
-    const iso = d.toISOString().slice(0, 10);
+    const iso = localISO(d);
     let entries = tpl.items.map((it, idx) => {
       const cat = state.catalog.find(c => c.id === it.catId);
       return {
@@ -426,7 +433,7 @@ function addTrip() {
   const last = new Date(end + 'T00:00:00');
   let guard = 0;
   while (cur <= last && guard++ < 400) {
-    trip.days.push({ date: cur.toISOString().slice(0, 10), entries: [], note: '' });
+    trip.days.push({ date: localISO(cur), entries: [], note: '' });
     cur.setDate(cur.getDate() + 1);
   }
 
